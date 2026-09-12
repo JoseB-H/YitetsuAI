@@ -1,2 +1,1 @@
 "# YitetsuAI" 
-xd
