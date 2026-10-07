@@ -166,6 +166,31 @@ class ConversationPersistenceTests(unittest.TestCase):
         interpretation = interpret_prompt(prompt)
         self.assertEqual(interpretation.interpreted, prompt)
 
+    def test_greeting_and_typo_in_name_question_get_a_relevant_answer(self):
+        token, _ = self.register(f"{uuid.uuid4()}@example.test")
+        response = self.client.post(
+            "/chat",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"prompt": "hola como te llams "},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual(data["interpreted_prompt"], "hola como te llamas ")
+        self.assertIn("Soy YitetsuAI", data["response"])
+        self.assertIn("Puedes llamarme Yitetsu", data["response"])
+        self.assertNotIn("small pilot", data["response"])
+        self.assertEqual(
+            data["corrections"],
+            [{"original": "llams", "corrected": "llamas"}],
+        )
+
+    def test_plain_greeting_gets_a_greeting_not_a_generic_project_template(self):
+        response = self.client.post("/chat", json={"prompt": "hola"})
+        self.assertEqual(response.status_code, 200, response.text)
+        answer = response.json()["response"]
+        self.assertIn("¡Hola!", answer)
+        self.assertNotIn("small pilot", answer)
+
 
 if __name__ == "__main__":
     unittest.main()

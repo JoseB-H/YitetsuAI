@@ -33,6 +33,7 @@ COMMON_CORRECTIONS = {
     "nesesitamos": "necesitamos",
     "alluda": "ayuda",
     "ayudame": "ayúdame",
+    "llams": "llamas",
     "ke": "que",
     "recieve": "receive",
     "enviroment": "environment",

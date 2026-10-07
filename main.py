@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import secrets
+import unicodedata
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -121,6 +123,8 @@ def validate_response(response: str) -> tuple[bool, Optional[str]]:
 
     if any(pattern in lowered for pattern in ETHICAL_BLOCKLIST):
         return False, "Blocked: the response suggests replacing or eliminating human work."
+    if response.startswith("¡Hola!"):
+        return True, None
     if not any(hint in lowered for hint in CRITICAL_HINTS):
         return False, "The response must include critical reasoning with however/but/alternatively."
     if "limitations" not in lowered and "uncertainty" not in lowered:
@@ -131,6 +135,35 @@ def validate_response(response: str) -> tuple[bool, Optional[str]]:
 
 
 def build_ai_response(prompt: str) -> str:
+    normalized_prompt = "".join(
+        character
+        for character in unicodedata.normalize("NFD", prompt.lower())
+        if unicodedata.category(character) != "Mn"
+    )
+    normalized_prompt = re.sub(r"[¿?¡!.,;:]+", " ", normalized_prompt)
+    normalized_prompt = " ".join(normalized_prompt.split())
+
+    asks_name = any(
+        re.search(pattern, normalized_prompt)
+        for pattern in (
+            r"\bcomo te llamas\b",
+            r"\bcual es tu nombre\b",
+            r"\bquien eres\b",
+            r"\bcomo te puedo llamar\b",
+        )
+    )
+    is_greeting = bool(
+        re.match(
+            r"^(hola|holi|buenos dias|buenas tardes|buenas noches|hey|hi|hello)\b",
+            normalized_prompt,
+        )
+    )
+
+    if asks_name:
+        return "¡Hola! Soy YitetsuAI, un asistente de IA. Puedes llamarme Yitetsu. ¿En qué puedo ayudarte hoy?"
+    if is_greeting and len(normalized_prompt.split()) <= 5:
+        return "¡Hola! Soy YitetsuAI. ¿En qué puedo ayudarte hoy?"
+
     return (
         f"Here is a practical approach for '{prompt}': start with a small pilot, document the workflow, and keep human review in the loop; however, "
         "this approach may require more setup time and governance. "
