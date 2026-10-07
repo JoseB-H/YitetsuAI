@@ -20,7 +20,8 @@ Los modelos no forman parte del repositorio. Descargarlos requiere acceso a
 hosts de almacenamiento de Hugging Face (`*.xethub.hf.co`, `*.huggingface.co`).
 Mantén la verificación TLS y configura la CA del entorno si la red usa un proxy.
 
-La API escucha en 8000. PostgreSQL guarda usuarios, sesiones, conversaciones,
+La API escucha en `127.0.0.1:8001` para no interferir con otros proyectos que
+usen el puerto 8000. PostgreSQL guarda usuarios, sesiones, conversaciones,
 mensajes, fuentes, extracciones y auditoría. Originales/derivados se conservan en
 `attachments_data`; Whisper en `whisper_data`; Ollama en `ollama_data`.
 La API crea tablas nuevas y añade `updated_at` y `sources` a instalaciones
@@ -32,10 +33,12 @@ Para arrancar la interfaz:
 ```bash
 cd frontend
 npm ci
-npm run dev -- --host 0.0.0.0
+npm run dev -- --host 127.0.0.1
 ```
 
-`VITE_API_URL` controla la dirección pública de la API; por defecto localhost:8000.
+`VITE_API_URL` controla la dirección pública de la API; por defecto
+`http://127.0.0.1:8001`. El frontend local escucha en `127.0.0.1:5174`; los
+puertos 5173 y 8000 quedan libres.
 El navegador debe poder llegar a esa dirección. Configura CORS si cambias el
 origen de la web. Los puertos locales son para desarrollo, no un despliegue público.
 
@@ -54,7 +57,7 @@ los puertos antes de usarlo como servicio público.
 python -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 mkdir -p data
-DATABASE_URL=sqlite+aiosqlite:///./data/dev.db .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+DATABASE_URL=sqlite+aiosqlite:///./data/dev.db .venv/bin/uvicorn main:app --host 127.0.0.1 --port 8001
 ```
 
 SQLite sirve para desarrollo y pruebas en una base nueva. Para la aplicación con
@@ -86,3 +89,15 @@ incertidumbre y límites forman parte de las instrucciones del modelo; no se
 presentan como una certificación ética automática. `documents`/pgvector y Redis
 siguen disponibles en el esquema/Compose heredados; el flujo de adjuntos actual
 no realiza búsqueda vectorial ni usa Redis.
+
+## Componentes básicos de IA
+
+`GET /ai/capabilities` describe los diez componentes que coordinan la consulta:
+interpretación/corrección, intención/idioma, memoria conversacional, lectura de
+documentos, análisis tabular, recuperación de fragmentos, percepción
+multimodal, generación de lenguaje, fuentes/transparencia y seguridad/manejo de
+fallos. Estos son componentes especializados del pipeline, no diez LLM grandes.
+La generación y percepción visual requieren los modelos configurados en Ollama;
+la extracción de audio, video y OCR puede requerir herramientas locales
+adicionales. El endpoint informa requisitos, no certifica que modelos externos
+estén descargados o respondiendo.

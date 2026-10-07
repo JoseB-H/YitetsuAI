@@ -51,7 +51,7 @@ services:
       ATTACHMENT_DIR: /app/data/attachments
       WHISPER_CACHE_DIR: /app/data/whisper
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8001:8000"
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app

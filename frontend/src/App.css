@@ -216,6 +216,63 @@ textarea {
   line-height: 1.7;
 }
 
+.capability-panel {
+  margin-bottom: 18px;
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  border-radius: 14px;
+  background: rgba(8, 47, 73, 0.2);
+}
+
+.capability-panel summary {
+  padding: 12px 14px;
+  color: #bae6fd;
+  cursor: pointer;
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+
+.capability-list {
+  display: grid;
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 10px 10px 34px;
+}
+
+.capability-list li {
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.65);
+}
+
+.capability-list li div {
+  display: grid;
+  gap: 3px;
+}
+
+.capability-list strong {
+  color: #e0f2fe;
+  font-size: 0.78rem;
+}
+
+.capability-list span,
+.capability-list small {
+  color: #a7b9d2;
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+.capability-list small {
+  color: #7dd3fc;
+}
+
+.capability-error {
+  padding: 0 14px;
+  color: #fca5a5;
+  font-size: 0.78rem;
+}
+
 .empty-history {
   color: #a7b9d2;
   font-size: 0.9rem;

@@ -48,6 +48,14 @@ class ConversationPersistenceTests(unittest.TestCase):
         data = response.json()
         return data["token"], data["user_id"]
 
+    def test_ai_capabilities_endpoint_returns_ten_pipeline_components(self):
+        response = self.client.get("/ai/capabilities")
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["count"], 10)
+        self.assertEqual(len(payload["components"]), 10)
+        self.assertIn("no diez LLM descargados", payload["note"])
+
     def test_chat_is_saved_and_can_be_loaded_from_history(self):
         token, _ = self.register(f"{uuid.uuid4()}@example.test")
         headers = {"Authorization": f"Bearer {token}"}

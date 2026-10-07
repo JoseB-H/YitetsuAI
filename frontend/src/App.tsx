@@ -34,13 +34,59 @@ type PromptCorrection = {
   corrected: string
 }
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+type AICapability = {
+  id: string
+  name: string
+  function: string
+  implementation: string
+  availability: string
+}
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8001'
 
 const samplePrompts = [
   '¿Cómo mejorar la experiencia de onboarding sin reemplazar al equipo?',
   '¿Qué pasos seguir para implementar IA de forma responsable en una empresa?',
   '¿Qué métricas debe revisar un equipo antes de escalar una solución de IA?',
 ]
+
+function isCapabilityList(value: unknown): value is { components: AICapability[] } {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('components' in value) ||
+    !Array.isArray(value.components)
+  ) {
+    return false
+  }
+  return value.components.every(
+    (component: unknown) =>
+      typeof component === 'object' &&
+      component !== null &&
+      'id' in component &&
+      typeof component.id === 'string' &&
+      'name' in component &&
+      typeof component.name === 'string' &&
+      'function' in component &&
+      typeof component.function === 'string' &&
+      'implementation' in component &&
+      typeof component.implementation === 'string' &&
+      'availability' in component &&
+      typeof component.availability === 'string',
+  )
+}
+
+async function fetchAICapabilities(): Promise<AICapability[]> {
+  const response = await fetch(`${API_BASE}/ai/capabilities`)
+  const data: unknown = await response.json()
+  if (!response.ok) {
+    throw new Error('No se pudieron cargar los componentes de IA')
+  }
+  if (!isCapabilityList(data)) {
+    throw new Error('La API devolvió una lista de componentes de IA inválida')
+  }
+  return data.components
+}
 
 function App() {
   const [authMode, setAuthMode] = useState<AuthMode>('register')
@@ -62,6 +108,8 @@ function App() {
 
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [selectedAttachments, setSelectedAttachments] = useState<string[]>([])
+  const [aiCapabilities, setAiCapabilities] = useState<AICapability[]>([])
+  const [capabilityError, setCapabilityError] = useState('')
 
   useEffect(() => {
     let active = true
@@ -111,6 +159,24 @@ function App() {
       })
       .catch(() => {
         if (mounted) setStatus(`La API no responde en ${API_BASE}`)
+      })
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  useEffect(() => {
+    let mounted = true
+    fetchAICapabilities()
+      .then(setAiCapabilities)
+      .catch((requestError: unknown) => {
+        if (mounted) {
+          setCapabilityError(
+            requestError instanceof Error
+              ? requestError.message
+              : 'No se pudieron cargar los componentes de IA',
+          )
+        }
       })
     return () => {
       mounted = false
@@ -510,6 +576,29 @@ function App() {
           <div className="panel-header">
             <h2>Asistente IA</h2>
           </div>
+
+          <details className="capability-panel">
+            <summary>
+              {aiCapabilities.length
+                ? `${aiCapabilities.length} componentes especializados`
+                : capabilityError
+                  ? 'Componentes de IA no disponibles'
+                  : 'Cargando componentes de IA...'}
+            </summary>
+            {capabilityError ? <p className="capability-error">{capabilityError}</p> : null}
+            <ol className="capability-list">
+              {aiCapabilities.map((capability) => (
+                <li key={capability.id}>
+                  <div>
+                    <strong>{capability.name}</strong>
+                    <span>{capability.function}</span>
+                    <small>{capability.implementation}</small>
+                    <small>{capability.availability}</small>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </details>
 
           <div className="prompt-list">
             {samplePrompts.map((prompt) => (

@@ -22,6 +22,7 @@ from sqlalchemy import delete, desc, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ai_models import CAPABILITIES, list_capabilities
 from database import (
     AuditLog,
     Base,
@@ -75,8 +76,6 @@ app.add_middleware(RequestSizeLimit)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
     ],
@@ -224,6 +223,15 @@ async def health() -> dict[str, str]:
     async with SessionLocal() as db:
         await db.execute(select(1))
     return {"status": "ok", "service": "yitetsuai"}
+
+
+@app.get("/ai/capabilities")
+async def ai_capabilities() -> dict[str, object]:
+    return {
+        "count": len(CAPABILITIES),
+        "components": list_capabilities(),
+        "note": "Son componentes especializados del pipeline, no diez LLM descargados.",
+    }
 
 
 @app.post("/auth/register", status_code=status.HTTP_201_CREATED)
