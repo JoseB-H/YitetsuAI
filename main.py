@@ -12,6 +12,11 @@ from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from attachments.models import Attachment
+from attachments.limits import RequestSizeLimit
+from attachments.routes import create_router as create_attachment_router
+from llm import ChatEngine, ModelUnavailable, get_chat_engine
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, desc, func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -32,8 +37,6 @@ from interpretation import interpret_prompt
 
 PASSWORD_HASH_ITERATIONS = 600_000
 SESSION_DURATION = timedelta(days=30)
-ETHICAL_BLOCKLIST = ["automate", "eliminate jobs", "replace workers"]
-CRITICAL_HINTS = ["however", "but", "alternatively"]
 
 
 @asynccontextmanager
@@ -47,17 +50,28 @@ async def lifespan(_: FastAPI):
                     "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
                 )
             )
-    yield
-    await engine.dispose()
+        if connection.dialect.name == "postgresql":
+            await connection.execute(
+                text(
+                    "ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS sources JSONB NOT NULL DEFAULT '[]'"
+                )
+            )
+    app.state.chat_engine = ChatEngine()
+    try:
+        yield
+    finally:
+        await app.state.chat_engine.close()
+        await engine.dispose()
 
 
 app = FastAPI(
     title="YitetsuAI",
-    version="0.2.0",
-    description="Ethical AI assistant MVP with persistent conversation history.",
+    version="0.3.0",
+    description="Asistente con conversaciones persistentes y adjuntos multimodales privados.",
     lifespan=lifespan,
 )
 
+app.add_middleware(RequestSizeLimit)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -86,6 +100,7 @@ class LoginRequest(BaseModel):
 class ChatRequest(BaseModel):
     prompt: str = Field(..., min_length=3, max_length=10_000)
     conversation_id: Optional[uuid.UUID] = None
+    attachment_ids: list[uuid.UUID] | None = Field(default=None, max_length=20)
 
 
 class ConversationCreateRequest(BaseModel):
@@ -94,7 +109,9 @@ class ConversationCreateRequest(BaseModel):
 
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PASSWORD_HASH_ITERATIONS)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode(), salt, PASSWORD_HASH_ITERATIONS
+    )
     return f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}${salt.hex()}${digest.hex()}"
 
 
@@ -118,23 +135,7 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def validate_response(response: str) -> tuple[bool, Optional[str]]:
-    lowered = response.lower()
-
-    if any(pattern in lowered for pattern in ETHICAL_BLOCKLIST):
-        return False, "Blocked: the response suggests replacing or eliminating human work."
-    if response.startswith("¡Hola!"):
-        return True, None
-    if not any(hint in lowered for hint in CRITICAL_HINTS):
-        return False, "The response must include critical reasoning with however/but/alternatively."
-    if "limitations" not in lowered and "uncertainty" not in lowered:
-        return False, "The response must acknowledge limitations or uncertainty."
-    if "source" not in lowered and "evidence" not in lowered:
-        return False, "The response should cite evidence or a source for transparency."
-    return True, None
-
-
-def build_ai_response(prompt: str) -> str:
+def greeting_response(prompt: str) -> str | None:
     normalized_prompt = "".join(
         character
         for character in unicodedata.normalize("NFD", prompt.lower())
@@ -164,12 +165,7 @@ def build_ai_response(prompt: str) -> str:
     if is_greeting and len(normalized_prompt.split()) <= 5:
         return "¡Hola! Soy YitetsuAI. ¿En qué puedo ayudarte hoy?"
 
-    return (
-        f"Here is a practical approach for '{prompt}': start with a small pilot, document the workflow, and keep human review in the loop; however, "
-        "this approach may require more setup time and governance. "
-        "Alternatively, an incremental rollout can reduce adoption risk while preserving the team's judgment. "
-        "The recommendation is grounded in general AI implementation principles and public source material, but it has limitations because local context, data quality, and regulatory requirements can change the answer."
-    )
+    return None
 
 
 async def record_audit(
@@ -259,7 +255,9 @@ async def register_user(payload: RegisterRequest, db: DbSession) -> dict[str, st
 
 @app.post("/auth/login")
 async def login_user(payload: LoginRequest, db: DbSession) -> dict[str, str]:
-    result = await db.execute(select(User).where(User.email == payload.email.strip().lower()))
+    result = await db.execute(
+        select(User).where(User.email == payload.email.strip().lower())
+    )
     user = result.scalar_one_or_none()
     if user is None or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -291,14 +289,18 @@ async def logout_user(
     db: DbSession,
 ) -> dict[str, str]:
     _, _, token = authorization.partition(" ")
-    await db.execute(delete(UserSession).where(UserSession.token_hash == hash_token(token.strip())))
+    await db.execute(
+        delete(UserSession).where(UserSession.token_hash == hash_token(token.strip()))
+    )
     await record_audit(db, "logout_user", user.id)
     await db.commit()
     return {"status": "ok"}
 
 
 @app.get("/conversations")
-async def list_conversations(user: CurrentUser, db: DbSession) -> list[dict[str, object]]:
+async def list_conversations(
+    user: CurrentUser, db: DbSession
+) -> list[dict[str, object]]:
     message_count = (
         select(func.count(ConversationMessage.id))
         .where(ConversationMessage.conversation_id == Conversation.id)
@@ -314,8 +316,12 @@ async def list_conversations(user: CurrentUser, db: DbSession) -> list[dict[str,
         {
             "conversation_id": str(conversation.id),
             "title": conversation.title,
-            "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
-            "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
+            "created_at": conversation.created_at.isoformat()
+            if conversation.created_at
+            else None,
+            "updated_at": conversation.updated_at.isoformat()
+            if conversation.updated_at
+            else None,
             "message_count": count,
         }
         for conversation, count in result.all()
@@ -348,10 +354,11 @@ async def get_conversation_messages(
     conversation_id: uuid.UUID,
     user: CurrentUser,
     db: DbSession,
-) -> list[dict[str, str | int]]:
+) -> list[dict[str, object]]:
     result = await db.execute(
-        select(Conversation)
-        .where(Conversation.id == conversation_id, Conversation.user_id == user.id)
+        select(Conversation).where(
+            Conversation.id == conversation_id, Conversation.user_id == user.id
+        )
     )
     conversation = result.scalar_one_or_none()
     if conversation is None:
@@ -368,13 +375,24 @@ async def get_conversation_messages(
             "sequence_number": message.sequence_number,
             "role": message.role,
             "content": message.content,
+            "sources": message.sources,
             "created_at": message.created_at.isoformat() if message.created_at else "",
         }
         for message in messages.scalars().all()
     ]
-    await record_audit(db, "read_conversation", user.id, {"conversation_id": str(conversation_id)})
+    await record_audit(
+        db, "read_conversation", user.id, {"conversation_id": str(conversation_id)}
+    )
     await db.commit()
     return response_messages
+
+
+@app.exception_handler(ModelUnavailable)
+async def model_error(request, exc):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+app.include_router(create_attachment_router(require_user))
 
 
 @app.post("/chat")
@@ -382,49 +400,101 @@ async def chat(
     payload: ChatRequest,
     db: DbSession,
     user: User | None = Depends(authenticate),
+    chat_engine: ChatEngine = Depends(get_chat_engine),
 ) -> dict[str, object]:
-    interpretation = interpret_prompt(payload.prompt)
-    response_text = build_ai_response(interpretation.interpreted)
-    valid, reason = validate_response(response_text)
-    if not valid:
-        raise HTTPException(status_code=400, detail=reason)
-
-    messages: list[dict[str, str]] = [
-        {"role": "user", "content": payload.prompt},
-        {"role": "assistant", "content": response_text},
-    ]
-    conversation_id: str | None = None
-
+    if not payload.prompt.strip():
+        raise HTTPException(422, "La pregunta no puede estar vacía")
+    if user is None and (payload.attachment_ids or payload.conversation_id):
+        raise HTTPException(
+            401, "Inicia sesión para utilizar conversaciones y adjuntos"
+        )
+    conversation = None
+    history = []
+    items = []
     if user is not None:
-        conversation: Conversation | None = None
         if payload.conversation_id is not None:
-            result = await db.execute(
-                select(Conversation).where(
+            conversation = await db.scalar(
+                select(Conversation)
+                .where(
                     Conversation.id == payload.conversation_id,
                     Conversation.user_id == user.id,
-                ).with_for_update()
+                )
+                .with_for_update()
             )
-            conversation = result.scalar_one_or_none()
             if conversation is None:
-                raise HTTPException(status_code=404, detail="Conversation not found")
-        else:
+                raise HTTPException(404, "Conversation not found")
+            history = list(
+                await db.scalars(
+                    select(ConversationMessage)
+                    .where(ConversationMessage.conversation_id == conversation.id)
+                    .order_by(ConversationMessage.sequence_number.desc())
+                    .limit(10)
+                )
+            )
+            history.reverse()
+            statement = (
+                select(Attachment)
+                .where(
+                    Attachment.user_id == user.id,
+                    Attachment.conversation_id == conversation.id,
+                )
+                .order_by(Attachment.created_at)
+            )
+            if payload.attachment_ids is not None:
+                statement = statement.where(Attachment.id.in_(payload.attachment_ids))
+            items = list(await db.scalars(statement))
+            if payload.attachment_ids is not None and len(items) != len(
+                set(payload.attachment_ids)
+            ):
+                raise HTTPException(
+                    404, "Uno de los adjuntos no pertenece a esta conversación"
+                )
+        elif payload.attachment_ids:
+            raise HTTPException(
+                422, "Selecciona la conversación que contiene los adjuntos"
+            )
+    if sum(len(item.extraction.get("visuals", [])) for item in items) > 8:
+        raise HTTPException(
+            422,
+            "Selecciona menos imágenes o videos: máximo ocho observaciones visuales por pregunta",
+        )
+    interpretation = interpret_prompt(payload.prompt)
+    greeting = greeting_response(interpretation.interpreted) if not items else None
+    if greeting:
+        result = {
+            "response": greeting,
+            "sources": [],
+            "warnings": [],
+            "model": "greeting",
+            "vision_model": None,
+        }
+    else:
+        result = await chat_engine.answer(
+            interpretation.interpreted.strip(), history, items
+        )
+    response_text = result["response"]
+    messages = [
+        {"role": "user", "content": payload.prompt, "sources": []},
+        {"role": "assistant", "content": response_text, "sources": result["sources"]},
+    ]
+    conversation_id = None
+    if user is not None:
+        if conversation is None:
             conversation = Conversation(
-                user_id=user.id,
-                title=payload.prompt.strip()[:80],
+                user_id=user.id, title=payload.prompt.strip()[:80]
             )
             db.add(conversation)
             await db.flush()
-
-        current_sequence_result = await db.execute(
-            select(func.coalesce(func.max(ConversationMessage.sequence_number), 0)).where(
-                ConversationMessage.conversation_id == conversation.id
-            )
+        current_sequence = await db.scalar(
+            select(
+                func.coalesce(func.max(ConversationMessage.sequence_number), 0)
+            ).where(ConversationMessage.conversation_id == conversation.id)
         )
-        next_sequence = current_sequence_result.scalar_one() + 1
-        conversation_id = str(conversation.id)
+        next_sequence = current_sequence + 1
         if conversation.title == "Nueva conversación":
             conversation.title = payload.prompt.strip()[:80]
         conversation.updated_at = datetime.now(timezone.utc)
+        conversation_id = str(conversation.id)
         db.add_all(
             [
                 ConversationMessage(
@@ -432,12 +502,14 @@ async def chat(
                     sequence_number=next_sequence,
                     role="user",
                     content=payload.prompt,
+                    sources=[],
                 ),
                 ConversationMessage(
                     conversation_id=conversation.id,
                     sequence_number=next_sequence + 1,
                     role="assistant",
                     content=response_text,
+                    sources=result["sources"],
                 ),
             ]
         )
@@ -445,21 +517,21 @@ async def chat(
             db,
             "chat_request",
             user.id,
-            {"conversation_id": conversation_id},
+            {"conversation_id": conversation_id, "attachment_count": str(len(items))},
         )
-        await db.commit()
     else:
         await record_audit(db, "guest_chat_request")
-        await db.commit()
-
+    await db.commit()
     return {
-        "response": response_text,
-        "validated": True,
-        "conversation_id": conversation_id,
+        **result,
         "interpreted_prompt": interpretation.interpreted,
         "corrections": [
             {"original": original, "corrected": corrected}
             for original, corrected in interpretation.corrections
         ],
+        "conversation_id": conversation_id,
         "messages": messages,
+        "limitations": [
+            "La IA, OCR y transcripción pueden equivocarse. Verifica datos y decisiones importantes."
+        ],
     }

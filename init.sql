@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
     sequence_number INTEGER NOT NULL,
     role VARCHAR(20) NOT NULL CHECK (role IN ('user', 'assistant')),
     content TEXT NOT NULL,
+    sources JSONB NOT NULL DEFAULT '[]',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (conversation_id, sequence_number)
 );
@@ -59,3 +60,18 @@ CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_id ON conversa
 CREATE INDEX IF NOT EXISTS idx_documents_user_id ON documents(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_user_id ON audit_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_documents_embedding ON documents USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+CREATE TABLE IF NOT EXISTS attachments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    filename VARCHAR(255) NOT NULL,
+    media_type VARCHAR(128) NOT NULL,
+    kind VARCHAR(32) NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    sha256 VARCHAR(64) NOT NULL,
+    extraction JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_attachments_user_id ON attachments(user_id);
+CREATE INDEX IF NOT EXISTS ix_attachments_conversation_id ON attachments(conversation_id);

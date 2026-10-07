@@ -325,3 +325,12 @@ textarea {
     text-align: left;
   }
 }
+
+.attachments-panel { border: 1px solid #405069; border-radius: 12px; padding: 14px; margin: 12px 0; }
+.attachments-panel p { font-size: .85rem; overflow-wrap: anywhere; }
+.upload-label { display: flex; flex-direction: column; gap: 8px; }
+.attachment-item { padding: 10px 0; border-top: 1px solid #405069; overflow-wrap: anywhere; }
+.attachment-item input[type=checkbox] { width: auto; }
+.attachment-item button { margin-right: 8px; }
+.source { padding: 8px; border-top: 1px solid #405069; }
+.source p, .message p { white-space: pre-wrap; overflow-wrap: anywhere; }

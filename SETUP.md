@@ -1,95 +1,88 @@
-# YitetsuAI Setup Guide
+# Ejecutar YitetsuAI
 
-## Requirements
+Python 3.12, Node.js 24 y Linux. El proceso de extracción usa límites POSIX;
+para Windows utiliza Docker o WSL. Para desarrollo fuera de Docker se necesitan
+FFmpeg/FFprobe, Tesseract (idiomas español e inglés) y Poppler (`pdftoppm`).
 
-- Docker Desktop or Docker Engine
-- Python 3.12+
-- Git
-
-## Quick start with Docker
+## Docker: API y servicios
 
 ```bash
 docker compose up -d --build
-docker exec yitetsuai_ollama ollama pull llama2
-curl http://localhost:8000/docs
+make pull-model
 ```
 
-PostgreSQL stores users, sessions, conversations, messages, and audit events in
-the `yitetsuai` database. Its data survives container restarts in the
-`postgres_data` volume. The `init.sql` schema is applied on first initialization.
-On later starts, the API creates newly-added tables and applies the
-`conversations.updated_at` column migration if it is missing.
+Esto descarga `qwen2.5:0.5b` para texto y `moondream` para imágenes. Puedes cambiar
+`OLLAMA_MODEL` y `OLLAMA_VISION_MODEL` por modelos compatibles, según los recursos
+y la precisión requerida. La primera extracción de audio descarga Whisper `tiny`;
+puedes cambiar `WHISPER_MODEL` a otro modelo o a una ruta local ya preparada.
+Los modelos no forman parte del repositorio. Descargarlos requiere acceso a
+`registry.ollama.ai`, sus blobs `*.r2.cloudflarestorage.com`, `huggingface.co` y los
+hosts de almacenamiento de Hugging Face (`*.xethub.hf.co`, `*.huggingface.co`).
+Mantén la verificación TLS y configura la CA del entorno si la red usa un proxy.
 
-To remove the stack without deleting saved database data, run:
+La API escucha en 8000. PostgreSQL guarda usuarios, sesiones, conversaciones,
+mensajes, fuentes, extracciones y auditoría. Originales/derivados se conservan en
+`attachments_data`; Whisper en `whisper_data`; Ollama en `ollama_data`.
+La API crea tablas nuevas y añade `updated_at` y `sources` a instalaciones
+PostgreSQL anteriores sin borrar conversaciones existentes. `init.sql` se aplica
+solo al crear el volumen PostgreSQL por primera vez.
+
+Para arrancar la interfaz:
+
+```bash
+cd frontend
+npm ci
+npm run dev -- --host 0.0.0.0
+```
+
+`VITE_API_URL` controla la dirección pública de la API; por defecto localhost:8000.
+El navegador debe poder llegar a esa dirección. Configura CORS si cambias el
+origen de la web. Los puertos locales son para desarrollo, no un despliegue público.
 
 ```bash
 docker compose down
 ```
 
-`docker compose down -v` deletes the PostgreSQL and Ollama data volumes.
+`make down` también conserva datos. `docker compose down -v` elimina los volúmenes,
+incluidos todos los adjuntos y conversaciones. El Compose heredado conserva sus
+credenciales PostgreSQL de desarrollo; configura credenciales, TLS y acceso a
+los puertos antes de usarlo como servicio público.
 
-## Local development
+## Desarrollo local
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+.venv/bin/python -m pip install -r requirements.txt
+mkdir -p data
+DATABASE_URL=sqlite+aiosqlite:///./data/dev.db .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-## Useful commands
+SQLite sirve para desarrollo y pruebas en una base nueva. Para la aplicación con
+persistencia PostgreSQL, usa el servicio Compose o define `DATABASE_URL` con tu
+conexión. `.env` se carga sin sobrescribir variables exportadas. Conserva secretos
+y datos fuera de Git. La inferencia necesita Ollama en `OLLAMA_URL` (por defecto
+http://127.0.0.1:11434) y los modelos instalados. `/health` comprueba la API,
+no la disponibilidad de los modelos.
+
+## Pruebas
 
 ```bash
-make up
-make down
-make logs
-make pull-model
+make test
+cd frontend
+npm run build
+CHROMIUM_PATH=/usr/bin/chromium npm run test:e2e
 ```
 
-## Database notes
+Sin Chromium disponible: `npx playwright install chromium` y luego `npm run test:e2e`
+sin `CHROMIUM_PATH`. La suite de API usa SQLite temporal y un modelo controlado;
+la extracción de documentos/OCR/video usa los parsers y herramientas reales.
+El navegador prueba el flujo contra respuestas API controladas. Consulta
+[los límites y la cobertura de validación](docs/attachments.md).
 
-The PostgreSQL schema is defined in `init.sql` and includes:
-
-- `users`
-- `sessions`
-- `conversations`
-- `conversation_messages`
-- `documents`
-- `audit_log`
-
-The `documents` table includes a vector column for semantic search using `pgvector`.
-Passwords are stored as PBKDF2 hashes, session tokens are stored as SHA-256
-hashes, and conversation message order is persisted explicitly.
-
-The authenticated API exposes:
-
-- `GET /conversations` to list the current user's conversations
-- `POST /conversations` to create a conversation
-- `GET /conversations/{id}/messages` to load its messages
-- `POST /chat` to append a user prompt and assistant reply to the selected conversation
-
-## Typo interpretation
-
-Chat prompts receive conservative offline spelling correction in Spanish and
-English. The API returns `interpreted_prompt` and the exact `corrections`, and
-the frontend displays them so users can spot an unintended correction. The
-original prompt is what is stored in the user message; unfamiliar or ambiguous
-words remain untouched. This prototype correction layer is not a substitute for
-an LLM-based intent reasoner and asks no external service to process prompts.
-
-## Ethics validation
-
-Every AI response is validated against the project ethics policy:
-
-- No replacement of human labor
-- Critical reasoning with `however`, `but`, or `alternatively`
-- Transparency about limitations and uncertainty
-- Audit logging for actions
-
-## Tests
-
-The API tests use an in-memory SQLite database and do not require Docker:
-
-```bash
-python -m unittest discover -s tests
-```
+La interpretación conserva puntuación, detecta español/inglés con diccionarios y
+corrige errores comunes o inequívocos. Devuelve `interpreted_prompt` y `corrections`;
+los mensajes guardan el texto original. Los principios de ayuda humana,
+incertidumbre y límites forman parte de las instrucciones del modelo; no se
+presentan como una certificación ética automática. `documents`/pgvector y Redis
+siguen disponibles en el esquema/Compose heredados; el flujo de adjuntos actual
+no realiza búsqueda vectorial ni usa Redis.

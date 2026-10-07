@@ -13,3 +13,8 @@ frontend/dist/
 frontend/.vite/
 nodejs/
 *.log
+
+data/
+.cache/
+playwright-report/
+test-results/

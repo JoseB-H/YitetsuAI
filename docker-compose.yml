@@ -24,7 +24,7 @@ services:
       - "6379:6379"
 
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.6.8
     container_name: yitetsuai_ollama
     ports:
       - "11434:11434"
@@ -45,12 +45,21 @@ services:
       DATABASE_URL: postgresql+asyncpg://yitetsu:password@postgres:5432/yitetsuai
       REDIS_URL: redis://redis:6379/0
       OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:0.5b}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-moondream}
+      WHISPER_MODEL: ${WHISPER_MODEL:-tiny}
+      ATTACHMENT_DIR: /app/data/attachments
+      WHISPER_CACHE_DIR: /app/data/whisper
     ports:
       - "8000:8000"
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app
+      - attachments_data:/app/data/attachments
+      - whisper_data:/app/data/whisper
 
 volumes:
   postgres_data:
   ollama_data:
+  attachments_data:
+  whisper_data:

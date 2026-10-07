@@ -18,7 +18,11 @@ type Conversation = {
   message_count: number
 }
 
+type Source = { attachment_id: string; filename: string; locator: string; excerpt: string }
+type Attachment = { attachment_id: string; conversation_id: string; filename: string; kind: string; size_bytes: number; warnings: string[] }
+
 type Message = {
+  sources?: Source[]
   message_id?: string
   role: MessageRole
   content: string
@@ -56,9 +60,21 @@ function App() {
     corrections: PromptCorrection[]
   } | null>(null)
 
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [selectedAttachments, setSelectedAttachments] = useState<string[]>([])
+
+  useEffect(() => {
+    let active = true
+    setAttachments([]); setSelectedAttachments([])
+    if (token && activeConversationId) fetchJson<Attachment[]>(`${API_BASE}/attachments?conversation_id=${activeConversationId}`)
+      .then(items => { if (active) { setAttachments(items); setSelectedAttachments(items.map(item => item.attachment_id)) } })
+      .catch(err => { if (active) setError(String(err.message)) })
+    return () => { active = false }
+  }, [token, activeConversationId])
+
   const fetchJson = async <T,>(url: string, options: RequestInit = {}): Promise<T> => {
     const headers = new Headers(options.headers)
-    if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+    if (!(options.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     if (token && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`)
 
     const response = await fetch(url, { ...options, headers })
@@ -142,6 +158,7 @@ function App() {
       })
       setAuthToken(data.token)
       setUser(data)
+      setRegisterForm({ email: '', password: '', full_name: '' })
       setStatus(`Registro exitoso para ${data.email}`)
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'No se pudo registrar')
@@ -161,6 +178,7 @@ function App() {
       })
       setAuthToken(data.token)
       setUser(data)
+      setLoginForm({ email: '', password: '' })
       setStatus(`Sesión iniciada para ${data.email}`)
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Credenciales inválidas')
@@ -229,6 +247,55 @@ function App() {
     }
   }
 
+  const handleFiles = async (files: FileList | null) => {
+    if (!files?.length || !token) return
+    setLoading(true); setError('')
+    let conversationId = activeConversationId
+    const uploaded: Attachment[] = []
+    const failures: string[] = []
+    try {
+      for (const file of Array.from(files)) {
+        setStatus(`Extrayendo ${file.name}…`)
+        const form = new FormData(); form.append('file', file)
+        if (conversationId) form.append('conversation_id', conversationId)
+        try {
+          const item = await fetchJson<Attachment>(`${API_BASE}/attachments`, { method: 'POST', body: form })
+          conversationId = item.conversation_id; uploaded.push(item)
+        } catch (err) { failures.push(`${file.name}: ${err instanceof Error ? err.message : 'Error de extracción'}`) }
+      }
+      if (conversationId !== activeConversationId) {
+        setMessages([]); setActiveConversationId(conversationId)
+      } else {
+        setAttachments(current => [...current, ...uploaded])
+        setSelectedAttachments(current => [...current, ...uploaded.map(item => item.attachment_id)])
+      }
+      setConversations(await fetchJson<Conversation[]>(`${API_BASE}/conversations`))
+      setStatus(`${uploaded.length} adjunto(s) procesado(s)`)
+      setError(failures.join(' · '))
+    } catch (err) { setError(err instanceof Error ? err.message : 'No se pudo actualizar el historial') }
+    finally { setLoading(false) }
+  }
+
+  const removeAttachment = async (id: string) => {
+    setLoading(true); setError('')
+    try {
+      await fetchJson(`${API_BASE}/attachments/${id}`, { method: 'DELETE' })
+      setAttachments(current => current.filter(item => item.attachment_id !== id))
+      setSelectedAttachments(current => current.filter(value => value !== id))
+    } catch (err) { setError(err instanceof Error ? err.message : 'No se pudo eliminar') }
+    finally { setLoading(false) }
+  }
+
+  const downloadAttachment = async (item: Attachment) => {
+    try {
+      const response = await fetch(`${API_BASE}/attachments/${item.attachment_id}/download`, { headers: { Authorization: `Bearer ${token}` } })
+      if (!response.ok) throw new Error('No se pudo descargar el archivo')
+      const url = URL.createObjectURL(await response.blob())
+      const link = document.createElement('a'); link.href = url; link.download = item.filename; link.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (err) { setError(err instanceof Error ? err.message : 'No se pudo descargar') }
+  }
+
   const handleChat = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setError('')
@@ -240,11 +307,13 @@ function App() {
         messages: Message[]
         interpreted_prompt: string
         corrections: PromptCorrection[]
+        warnings: string[]
       }>(`${API_BASE}/chat`, {
         method: 'POST',
         body: JSON.stringify({
           prompt: chatPrompt,
           conversation_id: activeConversationId,
+          attachment_ids: selectedAttachments,
         }),
       })
       setMessages((current) => [...current, ...data.messages])
@@ -253,6 +322,7 @@ function App() {
           ? { prompt: data.interpreted_prompt, corrections: data.corrections }
           : null,
       )
+      if (data.warnings?.length) setError(data.warnings.join(' · '))
       setChatPrompt('')
       if (data.conversation_id) {
         setActiveConversationId(data.conversation_id)
@@ -261,8 +331,8 @@ function App() {
       }
       setStatus(
         data.conversation_id
-          ? 'Respuesta validada y guardada en tu historial'
-          : 'Respuesta validada; inicia sesión para guardar el historial',
+          ? 'Respuesta guardada en tu historial'
+          : 'Inicia sesión para guardar el historial',
       )
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'No se pudo consultar la IA')
@@ -454,6 +524,21 @@ function App() {
             ))}
           </div>
 
+          <section className="attachments-panel" aria-label="Adjuntos">
+            <h3>Datos de esta conversación</h3>
+            <p>PDF, Word, Excel, CSV, JSON, texto, imágenes, audio y video. Hasta 25 MB por archivo; audio/video hasta 10 minutos. Selecciona los archivos que usará la IA.</p>
+            <label className="upload-label">Adjuntar archivos
+              <input type="file" multiple disabled={!token || loading} accept=".pdf,.docx,.xlsx,.csv,.tsv,.json,.txt,.md,.log,.html,.htm,.xml,.png,.jpg,.jpeg,.webp,.gif,.wav,.mp3,.m4a,.ogg,.flac,.mp4,.mov,.webm,.mkv" onChange={event => { void handleFiles(event.target.files); event.target.value = '' }} />
+            </label>
+            {!token && <p>Inicia sesión para adjuntar y conservar tus archivos.</p>}
+            {attachments.map(item => <article className="attachment-item" key={item.attachment_id}>
+              <label><input type="checkbox" disabled={loading} checked={selectedAttachments.includes(item.attachment_id)} onChange={event => setSelectedAttachments(current => event.target.checked ? [...current, item.attachment_id] : current.filter(id => id !== item.attachment_id))} /> {item.filename} · {item.kind} · {Math.ceil(item.size_bytes / 1024)} KB</label>
+              {item.warnings.map((warning, index) => <p key={index}>{warning}</p>)}
+              <button type="button" disabled={loading} onClick={() => void downloadAttachment(item)}>Descargar</button>
+              <button type="button" disabled={loading} onClick={() => void removeAttachment(item.attachment_id)}>Eliminar</button>
+            </article>)}
+          </section>
+
           <div className="message-list" aria-live="polite">
             {messages.length === 0 ? (
               <p className="empty-history">Tu conversación aparecerá aquí.</p>
@@ -465,6 +550,7 @@ function App() {
                 >
                   <p className="label">{message.role === 'user' ? 'Tú' : 'YitetsuAI'}</p>
                   <p>{message.content}</p>
+                  {!!message.sources?.length && <details><summary>Fuentes aportadas al modelo ({message.sources.length})</summary>{message.sources.map((source, sourceIndex) => <div className="source" key={sourceIndex}><strong>{source.filename} — {source.locator}</strong><p>{source.excerpt}</p></div>)}</details>}
                 </article>
               ))
             )}

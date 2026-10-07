@@ -8,17 +8,32 @@ from fastapi.testclient import TestClient
 
 from main import app
 from interpretation import interpret_prompt
+from llm import get_chat_engine, attachment_context
+
+
+class FakeChatEngine:
+    async def answer(self, question, history, items):
+        context, sources = attachment_context(question, items)
+        return {
+            "response": "Test model: " + context,
+            "sources": sources,
+            "warnings": [],
+            "model": "test",
+            "vision_model": None,
+        }
 
 
 class ConversationPersistenceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        app.dependency_overrides[get_chat_engine] = lambda: FakeChatEngine()
         cls.client_context = TestClient(app)
         cls.client = cls.client_context.__enter__()
 
     @classmethod
     def tearDownClass(cls):
         cls.client_context.__exit__(None, None, None)
+        app.dependency_overrides.clear()
 
     def register(self, email: str) -> tuple[str, str]:
         response = self.client.post(
@@ -100,7 +115,11 @@ class ConversationPersistenceTests(unittest.TestCase):
         self.register(email)
         duplicate = self.client.post(
             "/auth/register",
-            json={"email": email, "password": "test-password-123", "full_name": "Another User"},
+            json={
+                "email": email,
+                "password": "test-password-123",
+                "full_name": "Another User",
+            },
         )
         self.assertEqual(duplicate.status_code, 409)
 
@@ -109,6 +128,177 @@ class ConversationPersistenceTests(unittest.TestCase):
             json={"email": email, "password": "test-password-123"},
         )
         self.assertEqual(login.status_code, 200, login.text)
+
+    def test_attachments_are_private_and_used_with_persisted_sources(self):
+        token, _ = self.register(f"{uuid.uuid4()}@example.test")
+        other, _ = self.register(f"{uuid.uuid4()}@example.test")
+        headers = {"Authorization": f"Bearer {token}"}
+        foreign = {"Authorization": f"Bearer {other}"}
+        upload = self.client.post(
+            "/attachments",
+            headers=headers,
+            files={
+                "file": (
+                    "ventas.csv",
+                    b"product,revenue\nAurora,12\nBoreal,18\n",
+                    "text/csv",
+                )
+            },
+        )
+        self.assertEqual(upload.status_code, 201, upload.text)
+        item = upload.json()
+        identifier = item["attachment_id"]
+        conversation = item["conversation_id"]
+        details = self.client.get(f"/attachments/{identifier}", headers=headers)
+        self.assertEqual(
+            details.json()["metadata"]["numeric_columns"]["revenue"]["sum"], "30"
+        )
+        for suffix in ("", "/download"):
+            self.assertEqual(
+                self.client.get(
+                    f"/attachments/{identifier}{suffix}", headers=foreign
+                ).status_code,
+                404,
+            )
+        self.assertEqual(
+            self.client.delete(
+                f"/attachments/{identifier}", headers=foreign
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/attachments",
+                headers=foreign,
+                data={"conversation_id": conversation},
+                files={"file": ("other.txt", b"private")},
+            ).status_code,
+            404,
+        )
+        second = self.client.post(
+            "/attachments",
+            headers=headers,
+            data={"conversation_id": conversation},
+            files={
+                "file": ("objetivo.json", b'{"target_revenue":30}', "application/json")
+            },
+        )
+        self.assertEqual(second.status_code, 201, second.text)
+        second_id = second.json()["attachment_id"]
+        answer = self.client.post(
+            "/chat",
+            headers=headers,
+            json={
+                "prompt": "Compara ingresos Aurora y Boreal",
+                "conversation_id": conversation,
+                "attachment_ids": [identifier, second_id],
+            },
+        )
+        self.assertEqual(answer.status_code, 200, answer.text)
+        self.assertEqual(
+            {source["filename"] for source in answer.json()["sources"]},
+            {"ventas.csv", "objetivo.json"},
+        )
+        history = self.client.get(
+            f"/conversations/{conversation}/messages", headers=headers
+        ).json()
+        self.assertEqual(history[-1]["sources"], answer.json()["sources"])
+        excluded = self.client.post(
+            "/chat",
+            headers=headers,
+            json={
+                "prompt": "Pregunta sin archivos",
+                "conversation_id": conversation,
+                "attachment_ids": [],
+            },
+        )
+        self.assertEqual(excluded.json()["sources"], [])
+        self.assertEqual(
+            self.client.get(
+                f"/attachments/{identifier}/download", headers=headers
+            ).content,
+            b"product,revenue\nAurora,12\nBoreal,18\n",
+        )
+        self.assertEqual(
+            self.client.delete(
+                f"/attachments/{identifier}", headers=headers
+            ).status_code,
+            204,
+        )
+        self.assertEqual(
+            self.client.get(f"/attachments/{identifier}", headers=headers).status_code,
+            404,
+        )
+
+        self.assertEqual(
+            self.client.delete(
+                f"/attachments/{second_id}", headers=headers
+            ).status_code,
+            204,
+        )
+
+    def test_request_body_limit_rejects_large_payload_before_parsing(self):
+        response = self.client.post(
+            "/attachments",
+            content=b"",
+            headers={"Content-Length": str(27 * 1024 * 1024)},
+        )
+        self.assertEqual(response.status_code, 413)
+
+    def test_invalid_uploads_and_guest_access_are_rejected(self):
+        self.assertEqual(
+            self.client.post(
+                "/attachments", files={"file": ("data.txt", b"hello")}
+            ).status_code,
+            401,
+        )
+        token, _ = self.register(f"{uuid.uuid4()}@example.test")
+        headers = {"Authorization": f"Bearer {token}"}
+        for name, content, code in (
+            ("run.exe", b"MZ", 415),
+            ("empty.txt", b"", 422),
+            ("fake.pdf", b"not a pdf", 422),
+            ("bad.json", b"{", 422),
+            (
+                "bad.xml",
+                b'<!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]><x>&e;</x>',
+                422,
+            ),
+        ):
+            response = self.client.post(
+                "/attachments", headers=headers, files={"file": (name, content)}
+            )
+            self.assertEqual(response.status_code, code, response.text)
+        response = self.client.post(
+            "/attachments",
+            headers=headers,
+            files={"file": ("../secret.txt", b"visible safe data")},
+        )
+        self.assertEqual(response.json()["filename"], "secret.txt")
+        self.client.delete(
+            "/attachments/" + response.json()["attachment_id"], headers=headers
+        )
+
+    def test_missing_model_is_reported_without_fake_reply_or_saved_messages(self):
+        from llm import ModelUnavailable
+
+        class MissingModel:
+            async def answer(self, *args):
+                raise ModelUnavailable("Missing model")
+
+        app.dependency_overrides[get_chat_engine] = lambda: MissingModel()
+        try:
+            token, _ = self.register(f"{uuid.uuid4()}@example.test")
+            headers = {"Authorization": f"Bearer {token}"}
+            response = self.client.post(
+                "/chat", headers=headers, json={"prompt": "Test provider failure"}
+            )
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(
+                self.client.get("/conversations", headers=headers).json(), []
+            )
+        finally:
+            app.dependency_overrides[get_chat_engine] = lambda: FakeChatEngine()
 
     def test_logout_revokes_the_persisted_session(self):
         token, _ = self.register(f"{uuid.uuid4()}@example.test")
@@ -152,10 +342,14 @@ class ConversationPersistenceTests(unittest.TestCase):
         self.assertEqual(interpretation.interpreted, prompt)
         self.assertFalse(interpretation.was_corrected)
 
-    def test_interpretation_preserves_accents_and_corrects_unambiguous_english_typos(self):
+    def test_interpretation_preserves_accents_and_corrects_unambiguous_english_typos(
+        self,
+    ):
         prompt = "How can I definately recieve help?"
         interpretation = interpret_prompt(prompt)
-        self.assertEqual(interpretation.interpreted, "How can I definitely receive help?")
+        self.assertEqual(
+            interpretation.interpreted, "How can I definitely receive help?"
+        )
         self.assertEqual(
             interpretation.corrections,
             (("definately", "definitely"), ("recieve", "receive")),
