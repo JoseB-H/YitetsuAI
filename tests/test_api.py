@@ -7,6 +7,7 @@ os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 from fastapi.testclient import TestClient
 
 from main import app
+from interpretation import interpret_prompt
 
 
 class ConversationPersistenceTests(unittest.TestCase):
@@ -118,6 +119,52 @@ class ConversationPersistenceTests(unittest.TestCase):
 
         current_user = self.client.get("/users/me", headers=headers)
         self.assertEqual(current_user.status_code, 401)
+
+    def test_chat_corrects_common_typos_and_keeps_the_original_message(self):
+        token, _ = self.register(f"{uuid.uuid4()}@example.test")
+        response = self.client.post(
+            "/chat",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"prompt": "qiero aser una aplicasion"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual(data["interpreted_prompt"], "quiero hacer una aplicación")
+        self.assertEqual(
+            data["corrections"],
+            [
+                {"original": "qiero", "corrected": "quiero"},
+                {"original": "aser", "corrected": "hacer"},
+                {"original": "aplicasion", "corrected": "aplicación"},
+            ],
+        )
+        self.assertEqual(data["messages"][0]["content"], "qiero aser una aplicasion")
+
+        saved_messages = self.client.get(
+            f"/conversations/{data['conversation_id']}/messages",
+            headers={"Authorization": f"Bearer {token}"},
+        ).json()
+        self.assertEqual(saved_messages[0]["content"], "qiero aser una aplicasion")
+
+    def test_interpretation_preserves_punctuation_and_known_words(self):
+        prompt = "Como podemos mejorar YitetsuAI?"
+        interpretation = interpret_prompt(prompt)
+        self.assertEqual(interpretation.interpreted, prompt)
+        self.assertFalse(interpretation.was_corrected)
+
+    def test_interpretation_preserves_accents_and_corrects_unambiguous_english_typos(self):
+        prompt = "How can I definately recieve help?"
+        interpretation = interpret_prompt(prompt)
+        self.assertEqual(interpretation.interpreted, "How can I definitely receive help?")
+        self.assertEqual(
+            interpretation.corrections,
+            (("definately", "definitely"), ("recieve", "receive")),
+        )
+
+    def test_ambiguous_unknown_words_are_left_unchanged(self):
+        prompt = "xyzzy blorpt"
+        interpretation = interpret_prompt(prompt)
+        self.assertEqual(interpretation.interpreted, prompt)
 
 
 if __name__ == "__main__":

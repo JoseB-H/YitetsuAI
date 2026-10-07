@@ -68,6 +68,15 @@ The authenticated API exposes:
 - `GET /conversations/{id}/messages` to load its messages
 - `POST /chat` to append a user prompt and assistant reply to the selected conversation
 
+## Typo interpretation
+
+Chat prompts receive conservative offline spelling correction in Spanish and
+English. The API returns `interpreted_prompt` and the exact `corrections`, and
+the frontend displays them so users can spot an unintended correction. The
+original prompt is what is stored in the user message; unfamiliar or ambiguous
+words remain untouched. This prototype correction layer is not a substitute for
+an LLM-based intent reasoner and asks no external service to process prompts.
+
 ## Ethics validation
 
 Every AI response is validated against the project ethics policy:

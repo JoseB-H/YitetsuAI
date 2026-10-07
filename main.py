@@ -26,6 +26,7 @@ from database import (
     engine,
     get_db,
 )
+from interpretation import interpret_prompt
 
 PASSWORD_HASH_ITERATIONS = 600_000
 SESSION_DURATION = timedelta(days=30)
@@ -57,7 +58,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -344,7 +350,8 @@ async def chat(
     db: DbSession,
     user: User | None = Depends(authenticate),
 ) -> dict[str, object]:
-    response_text = build_ai_response(payload.prompt)
+    interpretation = interpret_prompt(payload.prompt)
+    response_text = build_ai_response(interpretation.interpreted)
     valid, reason = validate_response(response_text)
     if not valid:
         raise HTTPException(status_code=400, detail=reason)
@@ -416,5 +423,10 @@ async def chat(
         "response": response_text,
         "validated": True,
         "conversation_id": conversation_id,
+        "interpreted_prompt": interpretation.interpreted,
+        "corrections": [
+            {"original": original, "corrected": corrected}
+            for original, corrected in interpretation.corrections
+        ],
         "messages": messages,
     }

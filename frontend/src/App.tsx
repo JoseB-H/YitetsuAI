@@ -25,6 +25,11 @@ type Message = {
   created_at?: string
 }
 
+type PromptCorrection = {
+  original: string
+  corrected: string
+}
+
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const samplePrompts = [
@@ -46,6 +51,10 @@ function App() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
+  const [interpretation, setInterpretation] = useState<{
+    prompt: string
+    corrections: PromptCorrection[]
+  } | null>(null)
 
   const fetchJson = async <T,>(url: string, options: RequestInit = {}): Promise<T> => {
     const headers = new Headers(options.headers)
@@ -74,6 +83,7 @@ function App() {
       setConversations([])
       setActiveConversationId(null)
       setMessages([])
+      setInterpretation(null)
     }
   }
 
@@ -84,7 +94,7 @@ function App() {
         if (mounted) setStatus(`API conectada: ${data.status}`)
       })
       .catch(() => {
-        if (mounted) setStatus('La API no responde en localhost:8000')
+        if (mounted) setStatus(`La API no responde en ${API_BASE}`)
       })
     return () => {
       mounted = false
@@ -98,6 +108,7 @@ function App() {
       setConversations([])
       setActiveConversationId(null)
       setMessages([])
+      setInterpretation(null)
       return
     }
 
@@ -204,6 +215,7 @@ function App() {
   const handleSelectConversation = async (conversationId: string) => {
     setError('')
     setLoading(true)
+    setInterpretation(null)
     try {
       const history = await fetchJson<Message[]>(
         `${API_BASE}/conversations/${conversationId}/messages`,
@@ -226,6 +238,8 @@ function App() {
         response: string
         conversation_id: string | null
         messages: Message[]
+        interpreted_prompt: string
+        corrections: PromptCorrection[]
       }>(`${API_BASE}/chat`, {
         method: 'POST',
         body: JSON.stringify({
@@ -234,6 +248,11 @@ function App() {
         }),
       })
       setMessages((current) => [...current, ...data.messages])
+      setInterpretation(
+        data.corrections.length
+          ? { prompt: data.interpreted_prompt, corrections: data.corrections }
+          : null,
+      )
       setChatPrompt('')
       if (data.conversation_id) {
         setActiveConversationId(data.conversation_id)
@@ -450,6 +469,18 @@ function App() {
               ))
             )}
           </div>
+
+          {interpretation?.corrections.length ? (
+            <div className="interpretation-notice" role="status">
+              <p className="label">Interpreté tu consulta como</p>
+              <p>{interpretation.prompt}</p>
+              <p className="correction-details">
+                Correcciones: {interpretation.corrections
+                  .map(({ original, corrected }) => `${original} → ${corrected}`)
+                  .join(', ')}
+              </p>
+            </div>
+          ) : null}
 
           <form onSubmit={handleChat} className="chat-form">
             <textarea

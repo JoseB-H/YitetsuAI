@@ -290,6 +290,22 @@ textarea {
   background: rgba(15, 23, 42, 0.76);
 }
 
+.interpretation-notice {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  border-radius: 14px;
+  background: rgba(14, 116, 144, 0.14);
+  color: #e0f2fe;
+  overflow-wrap: anywhere;
+}
+
+.correction-details {
+  margin-top: 8px;
+  color: #a5c8dd;
+  font-size: 0.8rem;
+}
+
 @media (max-width: 900px) {
   .app-shell {
     padding: 20px 14px 40px;
